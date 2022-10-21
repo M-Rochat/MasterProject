@@ -1,0 +1,8 @@
+datasets
+evaluate
+transformers
+pandas
+inflect
+spacy 
+argparse
+sklearn
