@@ -1,4 +1,5 @@
-from transformers import GPT2LMHeadModel, GPT2Tokenizer, Trainer, TrainingArguments
+from torch.utils.data import TensorDataset
+from transformers import GPT2LMHeadModel, GPT2Tokenizer, Trainer, TrainingArguments, Seq2SeqTrainer
 from argparse import ArgumentParser
 import torch
 from torch import cuda
@@ -32,55 +33,38 @@ def main():
     train_dataset = load_dataset('csv', data_files=args.dataset_dir, delimiter='\t',
                                  download_mode=DownloadMode.FORCE_REDOWNLOAD if args.reset_cache else DownloadMode.REUSE_DATASET_IF_EXISTS)[
         'train']
-    print(len(train_dataset), train_dataset[0])
+
+    print("Dataset loaded",len(train_dataset), train_dataset[0])
 
     tokenizer = GPT2Tokenizer.from_pretrained(args.model_name)
+    tokenizer.pad_token="[PAD]"
     model = GPT2LMHeadModel.from_pretrained(args.model_name)
     model.to(args.device)
+    for example in train_dataset['tail']:
+        if not isinstance(example,str):
+            print(example)
 
     max_seq_length = 512
     num_proc = 4
 
     def tokenize_function(examples):
-        # Remove empty lines
-        examples["text"] = [line for line in examples["text"] if len(line) > 0 and not line.isspace()]
-        return tokenizer(
-            examples["text"],
-            truncation=True,
-            max_length=max_seq_length,
-        )
+        model_inputs = tokenizer(examples['head'], max_length=max_seq_length, pad_to_max_length=True, truncation=True)
+        labels = tokenizer(text_target=examples['tail'], max_length=max_seq_length, truncation=True)
+
+        # If we are padding here, replace all tokenizer.pad_token_id in the labels by -100 when we want to ignore
+        # padding in the loss.
+        # if padding == "max_length" and data_args.ignore_pad_token_for_loss:
+        #     labels["input_ids"] = [
+        #         [(l if l != tokenizer.pad_token_id else -100) for l in label] for label in labels["input_ids"]
+        #     ]
+        model_inputs["labels"] = labels["input_ids"]
+        return model_inputs
 
     tokenized_dataset = train_dataset.map(
         tokenize_function,
-        batched=True,
-        num_proc=num_proc,
-        remove_columns=["text"],
+        batched=True,#num_proc=num_proc,
     )
-    print(tokenized_dataset.shape)
 
-    def group_texts(examples):
-        # Concatenate all texts.
-        concatenated_examples = {k: sum(examples[k], []) for k in examples.keys()}
-        total_length = len(concatenated_examples[list(examples.keys())[0]])
-        # We drop the small remainder, we could add padding if the model supported it instead of this drop,
-        # you can customize this part to your needs.
-        total_length = (total_length // max_seq_length) * max_seq_length
-        # Split by chunks of max_len.
-        result = {
-            k: [t[i: i + max_seq_length] for i in range(0, total_length, max_seq_length)]
-            for k, t in concatenated_examples.items()
-        }
-        return result
-
-    # Note that with `batched=True`, this map processes 1,000 texts together,
-    # so group_texts throws away a remainder for each of those groups of 1,000 texts.
-    # You can adjust that batch_size here but a higher value might be slower to preprocess.
-
-    tokenized_dataset = tokenized_dataset.map(
-        group_texts,
-        batched=True,
-        num_proc=num_proc,
-    )
     print(tokenized_dataset.shape)
     print(tokenized_dataset.data)
     print(tokenized_dataset[0])
@@ -90,6 +74,34 @@ def main():
     for gen in generations:
         new_text = tokenizer.decode(gen)
         print(new_text)
+
+    def compute_metrics(eval_preds):
+        preds, labels = eval_preds
+        if isinstance(preds, tuple):
+            preds = preds[0]
+        decoded_preds = tokenizer.batch_decode(preds, skip_special_tokens=True)
+        # if data_args.ignore_pad_token_for_loss:
+        #     # Replace -100 in the labels as we can't decode them.
+        #     labels = np.where(labels != -100, labels, tokenizer.pad_token_id)
+        decoded_labels = tokenizer.batch_decode(labels, skip_special_tokens=True)
+
+        # Some simple post-processing
+        decoded_preds, decoded_labels = postprocess_text(decoded_preds, decoded_labels)
+
+        result = metric.compute(predictions=decoded_preds, references=decoded_labels, use_stemmer=True)
+        result = {k: round(v * 100, 4) for k, v in result.items()}
+        prediction_lens = [np.count_nonzero(pred != tokenizer.pad_token_id) for pred in preds]
+        result["gen_len"] = np.mean(prediction_lens)
+        return result
+
+    trainer = Seq2SeqTrainer(
+        model=model,
+        args=training_args,
+        train_dataset=train_dataset,
+        tokenizer=tokenizer,
+        data_collator=data_collator,
+        compute_metrics=compute_metrics if training_args.predict_with_generate else None,
+    )
 
     # trainer = Trainer(
     #     model=model,

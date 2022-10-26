@@ -2,6 +2,10 @@ import pandas as pd
 import inflect
 import spacy
 from argparse import ArgumentParser
+from matplotlib import pyplot, colors as mcolors
+
+inflection_engine = inflect.engine()
+nlp = spacy.load("en_core_web_sm")
 
 
 def triplet_to_text(fact):
@@ -9,9 +13,6 @@ def triplet_to_text(fact):
     Take a dict ['head','relation','tail'] and update 'head' and 'tail' in a text form
     @param fact:
     """
-
-    inflection_engine = inflect.engine()
-    nlp = spacy.load("en_core_web_sm")
 
     def article(word):
         return "an" if word[0] in ['a', 'e', 'i', 'o', 'u'] else "a"
@@ -87,13 +88,23 @@ def triplet_to_text(fact):
     fact['tail'] = tail
 
 
-def count_examples(data, relations):
+def plot_bar(data, relations):
     sum = 0
-    for r in relations:
-        size = data.loc[data["relation"] == r].shape[0]
-        print(r, size)
-        sum += size
-    print(sum, "/", data.shape[0])
+    count = []
+    labels = []
+    colors = []
+    kind_to_colors = {"Physical-Entities": 'b', "Event-Centered": 'g', "Social-Interacton": 'r'}
+    for kind, relations in relations.items():
+        colors += kind_to_colors[kind] * len(relations)
+        for r in relations:
+            labels.append(r)
+            size = data.loc[data["relation"] == r].shape[0]
+            count.append(size)
+            sum += size
+    assert sum == data.shape[0], "Dataset contains unknown relations"
+    pyplot.bar(x=range(len(labels)), height=count, color=colors, label=labels)
+    pyplot.show()
+
 
 def main():
     parser = ArgumentParser()
@@ -102,29 +113,31 @@ def main():
     parser.add_argument("--eval", default=False)
     args = parser.parse_args()
 
-
     data = pd.read_csv(args.dataset_dir, sep='\t', names=["head", "relation", "tail"])
-    relations = ["ObjectUse", "CapableOf", "MadeUpOf", "HasProperty", "Desires", "NotDesires", "AtLocation"] + \
-                ["Causes", "HinderedBy", "xReason", "isAfter", "isBefore", "HasSubEvent", "isFilledBy"] \
-                + ["xIntent", "xReact", "oReact", "xAttr", "xEffect", "xNeed", "xWant", "oEffect", "oWant"]
+    relations = {"Physical-Entities": ["ObjectUse", "CapableOf", "MadeUpOf", "HasProperty", "Desires", "NotDesires",
+                                       "AtLocation"],
+                 "Event-Centered": ["Causes", "HinderedBy", "xReason", "isAfter", "isBefore", "HasSubEvent",
+                                    "isFilledBy"],
+                 "Social-Interacton": ["xIntent", "xReact", "oReact", "xAttr", "xEffect", "xNeed", "xWant", "oEffect",
+                                       "oWant"]}
 
-    count_examples(data, relations)
+    # plot_bar(data, relations)
+    print(data.shape)
+    for word in ('none', 'None','NONE','NONEQ'):
+        data = data[data["tail"] != word]
+        print(data.shape)
+    data = data[data["tail"].notna()]
+    print(data.shape)
 
-    data.drop(data[data["tail"] == "none"].index, inplace=True)
     data.apply(triplet_to_text, axis="columns")
     data.drop(columns="relation", inplace=True)
-    data = data.sample(frac=1).reset_index(drop=True) #shuffle the dataframe
+    data = data.sample(frac=1).reset_index(drop=True)  # shuffle the dataframe
 
-    if args.eval:
-        pass
-    else:
-        data["text"]= data["head"]+ " " + data["tail"]
-        data.drop(columns=["tail","head"],inplace=True)
-    data.to_json(args.output_dir+".json")
-    data.to_csv(args.output_dir+".csv", index=None, sep='\t')
+    # data.to_json(args.output_dir + ".json")
+    data.to_csv(args.output_dir + ".csv", index=None, sep='\t')
 
 
 if __name__ == '__main__':
     main()
-    #data = pd.read_csv("modified_dataset/train.csv", sep='\t')
-    #data.to_json("modified_dataset/train.json")
+    # data = pd.read_csv("modified_dataset/train.csv", sep='\t')
+    # data.to_json("modified_dataset/train.json")
