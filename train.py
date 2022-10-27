@@ -1,5 +1,7 @@
 from torch.utils.data import TensorDataset
-from transformers import GPT2LMHeadModel, GPT2Tokenizer, Trainer, TrainingArguments, Seq2SeqTrainer
+import evaluate
+from transformers import GPT2LMHeadModel, GPT2Tokenizer, Trainer, TrainingArguments, Seq2SeqTrainer, \
+    DataCollatorForSeq2Seq
 from argparse import ArgumentParser
 import torch
 from torch import cuda
@@ -34,14 +36,14 @@ def main():
                                  download_mode=DownloadMode.FORCE_REDOWNLOAD if args.reset_cache else DownloadMode.REUSE_DATASET_IF_EXISTS)[
         'train']
 
-    print("Dataset loaded",len(train_dataset), train_dataset[0])
+    print("Dataset loaded", len(train_dataset), train_dataset[0])
 
     tokenizer = GPT2Tokenizer.from_pretrained(args.model_name)
-    tokenizer.pad_token="[PAD]"
+    tokenizer.pad_token = "[PAD]"
     model = GPT2LMHeadModel.from_pretrained(args.model_name)
     model.to(args.device)
     for example in train_dataset['tail']:
-        if not isinstance(example,str):
+        if not isinstance(example, str):
             print(example)
 
     max_seq_length = 512
@@ -62,60 +64,80 @@ def main():
 
     tokenized_dataset = train_dataset.map(
         tokenize_function,
-        batched=True,#num_proc=num_proc,
+        batched=True,  # num_proc=num_proc,
+        remove_columns=['head', 'tail'],
+        load_from_cache_file=not args.reset_cache,
+        desc="Running tokenizer on dataset",
     )
 
+    print('Tokenization done')
     print(tokenized_dataset.shape)
     print(tokenized_dataset.data)
     print(tokenized_dataset[0])
 
-    input_ids = tokenizer.encode("This is", return_tensors="pt")
+    # Data collator
+    data_collator = DataCollatorForSeq2Seq(
+        tokenizer,
+        model=model,
+        label_pad_token_id=tokenizer.pad_token_id,
+        # pad_to_multiple_of=8 if training_args.fp16 else None,
+    )
+
+    # Metric
+    metric = evaluate.load("accuracy")
+
+    def compute_metrics(eval_preds):
+        preds, labels = eval_preds
+        # preds have the same shape as the labels, after the argmax(-1) has been calculated
+        # by preprocess_logits_for_metrics but we need to shift the labels
+        labels = labels[:, 1:].reshape(-1)
+        preds = preds[:, :-1].reshape(-1)
+        return metric.compute(predictions=preds, references=labels)
+
+    # def compute_metrics(eval_preds):
+    #     preds, labels = eval_preds
+    #     if isinstance(preds, tuple):
+    #         preds = preds[0]
+    #     decoded_preds = tokenizer.batch_decode(preds, skip_special_tokens=True)
+    #     # if data_args.ignore_pad_token_for_loss:
+    #     #     # Replace -100 in the labels as we can't decode them.
+    #     #     labels = np.where(labels != -100, labels, tokenizer.pad_token_id)
+    #     decoded_labels = tokenizer.batch_decode(labels, skip_special_tokens=True)
+    #
+    #     # Some simple post-processing
+    #     decoded_preds, decoded_labels = postprocess_text(decoded_preds, decoded_labels)
+    #
+    #     result = metric.compute(predictions=decoded_preds, references=decoded_labels, use_stemmer=True)
+    #     result = {k: round(v * 100, 4) for k, v in result.items()}
+    #     prediction_lens = [np.count_nonzero(pred != tokenizer.pad_token_id) for pred in preds]
+    #     result["gen_len"] = np.mean(prediction_lens)
+    #     return result
+
+    trainer = Seq2SeqTrainer(
+        model=model,
+        # args=training_args,
+        train_dataset=train_dataset,
+        tokenizer=tokenizer,
+        data_collator=data_collator,
+        compute_metrics=compute_metrics,
+    )
+    train_result = trainer.train()
+    trainer.save_model()  # Saves the tokenizer too for easy upload
+
+    metrics = train_result.metrics
+
+    metrics["train_samples"] = len(train_dataset)
+
+    trainer.log_metrics("train", metrics)
+    trainer.save_metrics("train", metrics)
+    trainer.save_state()
+
+    # Test model
+    input_ids = tokenizer.encode("I give you an apple. I am", return_tensors="pt")
     generations = model.generate(input_ids=input_ids.to(args.device))
     for gen in generations:
         new_text = tokenizer.decode(gen)
         print(new_text)
-
-    def compute_metrics(eval_preds):
-        preds, labels = eval_preds
-        if isinstance(preds, tuple):
-            preds = preds[0]
-        decoded_preds = tokenizer.batch_decode(preds, skip_special_tokens=True)
-        # if data_args.ignore_pad_token_for_loss:
-        #     # Replace -100 in the labels as we can't decode them.
-        #     labels = np.where(labels != -100, labels, tokenizer.pad_token_id)
-        decoded_labels = tokenizer.batch_decode(labels, skip_special_tokens=True)
-
-        # Some simple post-processing
-        decoded_preds, decoded_labels = postprocess_text(decoded_preds, decoded_labels)
-
-        result = metric.compute(predictions=decoded_preds, references=decoded_labels, use_stemmer=True)
-        result = {k: round(v * 100, 4) for k, v in result.items()}
-        prediction_lens = [np.count_nonzero(pred != tokenizer.pad_token_id) for pred in preds]
-        result["gen_len"] = np.mean(prediction_lens)
-        return result
-
-    trainer = Seq2SeqTrainer(
-        model=model,
-        args=training_args,
-        train_dataset=train_dataset,
-        tokenizer=tokenizer,
-        data_collator=data_collator,
-        compute_metrics=compute_metrics if training_args.predict_with_generate else None,
-    )
-
-    # trainer = Trainer(
-    #     model=model,
-    #     args=training_args,
-    #     train_dataset=train_dataset,
-    #     eval_dataset=None,
-    #     tokenizer=tokenizer,
-    #     # Data collator will default to DataCollatorWithPadding, so we change it.
-    #     data_collator=default_data_collator,
-    #     compute_metrics=compute_metrics if training_args.do_eval else None,
-    #     preprocess_logits_for_metrics=preprocess_logits_for_metrics
-    #     if training_args.do_eval and not is_torch_tpu_available()
-    #     else None,
-    # )
 
 
 if __name__ == '__main__':

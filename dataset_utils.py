@@ -123,7 +123,7 @@ def main():
 
     # plot_bar(data, relations)
     print(data.shape)
-    for word in ('none', 'None','NONE','NONEQ'):
+    for word in ('none', 'None', 'NONE', 'NONEQ'):
         data = data[data["tail"] != word]
         print(data.shape)
     data = data[data["tail"].notna()]
