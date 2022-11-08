@@ -108,36 +108,37 @@ def plot_bar(data, relations):
 
 def main():
     parser = ArgumentParser()
-    parser.add_argument("--dataset_dir", default='dataset/train.tsv')
-    parser.add_argument("--output_dir", default="modified_dataset/train")
+    parser.add_argument("--dataset_dir", default='dataset/')
+    parser.add_argument("--output_dir", default="modified_dataset/")
     parser.add_argument("--eval", default=False)
     args = parser.parse_args()
 
-    data = pd.read_csv(args.dataset_dir, sep='\t', names=["head", "relation", "tail"])
-    relations = {"Physical-Entities": ["ObjectUse", "CapableOf", "MadeUpOf", "HasProperty", "Desires", "NotDesires",
-                                       "AtLocation"],
-                 "Event-Centered": ["Causes", "HinderedBy", "xReason", "isAfter", "isBefore", "HasSubEvent",
-                                    "isFilledBy"],
-                 "Social-Interacton": ["xIntent", "xReact", "oReact", "xAttr", "xEffect", "xNeed", "xWant", "oEffect",
-                                       "oWant"]}
+    for split in ("train", "test", "dev"):
+        dataset_dir = args.dataset_dir + split + ".tsv"
+        output_dir = args.output_dir + split + ".tsv"
+        data = pd.read_csv(dataset_dir, sep='\t', names=["head", "relation", "tail"])
+        relations = {"Physical-Entities": ["ObjectUse", "CapableOf", "MadeUpOf", "HasProperty", "Desires", "NotDesires",
+                                           "AtLocation"],
+                     "Event-Centered": ["Causes", "HinderedBy", "xReason", "isAfter", "isBefore", "HasSubEvent",
+                                        "isFilledBy"],
+                     "Social-Interacton": ["xIntent", "xReact", "oReact", "xAttr", "xEffect", "xNeed", "xWant",
+                                           "oEffect",
+                                           "oWant"]}
 
-    # plot_bar(data, relations)
-    print(data.shape)
-    for word in ('none', 'None', 'NONE', 'NONEQ'):
-        data = data[data["tail"] != word]
+        # plot_bar(data, relations)
         print(data.shape)
-    data = data[data["tail"].notna()]
-    print(data.shape)
+        for word in ('none', 'None', 'NONE', 'NONEQ'):
+            data = data[data["tail"] != word]
+            print(data.shape)
+        data = data[data["tail"].notna()]
+        print(data.shape)
 
-    data.apply(triplet_to_text, axis="columns")
-    data.drop(columns="relation", inplace=True)
-    data = data.sample(frac=1).reset_index(drop=True)  # shuffle the dataframe
+        data.apply(triplet_to_text, axis="columns")
+        data.drop(columns="relation", inplace=True)
+        data = data.sample(frac=1).reset_index(drop=True)  # shuffle the dataframe
 
-    # data.to_json(args.output_dir + ".json")
-    data.to_csv(args.output_dir + ".csv", index=None, sep='\t')
+        data.to_csv(output_dir, index=None, sep='\t')
 
 
 if __name__ == '__main__':
     main()
-    # data = pd.read_csv("modified_dataset/train.csv", sep='\t')
-    # data.to_json("modified_dataset/train.json")
