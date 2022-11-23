@@ -2,7 +2,10 @@ import pandas as pd
 import inflect
 import spacy
 from argparse import ArgumentParser
-from matplotlib import pyplot, colors as mcolors
+import matplotlib.pyplot as plt
+global plt
+import matplotlib.colors as mcolors
+import sys
 
 inflection_engine = inflect.engine()
 nlp = spacy.load("en_core_web_sm")
@@ -88,57 +91,72 @@ def triplet_to_text(fact):
     fact['tail'] = tail
 
 
-def plot_bar(data, relations):
+def plot_bar(data, relations, save=None):
     sum = 0
     count = []
     labels = []
     colors = []
-    kind_to_colors = {"Physical-Entities": 'b', "Event-Centered": 'g', "Social-Interacton": 'r'}
-    for kind, relations in relations.items():
-        colors += kind_to_colors[kind] * len(relations)
-        for r in relations:
-            labels.append(r)
+    kind_to_colors = {"Physical-Entities": 'green', "Event-Centered": 'darkviolet', "Social-Interaction": 'red'}
+    for kind, relations in reversed(relations.items()):
+        colors += [kind_to_colors[kind]] * len(relations)
+        for r in reversed(relations):
             size = data.loc[data["relation"] == r].shape[0]
+            labels.append(f'{r}')
             count.append(size)
             sum += size
     assert sum == data.shape[0], "Dataset contains unknown relations"
-    pyplot.bar(x=range(len(labels)), height=count, color=colors, label=labels)
-    pyplot.show()
+    assert len(colors) == len(labels), "Colors do not match labels"
+    plt.barh(y=range(len(labels)), width=count, color=colors, tick_label=labels)
+    if save:
+        plt.savefig(save, bbox_inches='tight')
+    plt.show()
+    
+def cleanup(data):
+    size = data.shape
+    for word in ('none', 'None', 'NONE', 'NONEQ'):
+        data = data[data["tail"] != word]
+    data = data[data["tail"].notna()]
+    print(f'old size {size}, after removing None new size {data.shape}')
+    return data
+
+def main(dataset_dir='dataset/', output_dir = 'modified_dataset/', splits= ("train", "test", "dev"),  eval=False):
+    relations = {"Physical-Entities": ["ObjectUse", "CapableOf", "MadeUpOf", "HasProperty", "Desires", "NotDesires",
+                                           "AtLocation"],
+                     "Event-Centered": ["Causes", "HinderedBy", "xReason", "isAfter", "isBefore", "HasSubEvent",
+                                        "isFilledBy"],
+                     "Social-Interaction": ["xIntent", "xReact", "oReact", "xAttr", "xEffect", "xNeed", "xWant",
+                                           "oEffect",
+                                           "oWant"]}
+    dataset={}
+    
+    for split_name in splits:
+        data_path = dataset_dir + split_name + ".tsv"
+        output_path = output_dir + split_name + ".tsv"
+        dataset[split_name] = pd.read_csv(data_path, sep='\t', names=["head", "relation", "tail"])
+        
+   
+    print(f'Total number of items {sum(int(split.shape[0]) for split in dataset.values())}')
+    for split_name in splits:
+        dataset[split_name]=cleanup(dataset[split_name])
+    print(f'Total number of items after removing none {sum(int(split.shape[0]) for split in dataset.values())}')
+    
+    
+    for split_name in splits:
+        print(split_name)
+        plot_bar(dataset[split_name], relations, save=split_name+'.png')
+        
+    if False:
+        data.apply(triplet_to_text, axis="columns")
+        data.drop(columns="relation", inplace=True)
+        data = data.sample(frac=1).reset_index(drop=True)  # shuffle the dataframe
+
+        data.to_csv(output_path, index=None, sep='\t')
 
 
-def main():
+if __name__ == '__main__':
     parser = ArgumentParser()
     parser.add_argument("--dataset_dir", default='dataset/')
     parser.add_argument("--output_dir", default="modified_dataset/")
     parser.add_argument("--eval", default=False)
     args = parser.parse_args()
-
-    for split in ("train", "test", "dev"):
-        dataset_dir = args.dataset_dir + split + ".tsv"
-        output_dir = args.output_dir + split + ".tsv"
-        data = pd.read_csv(dataset_dir, sep='\t', names=["head", "relation", "tail"])
-        relations = {"Physical-Entities": ["ObjectUse", "CapableOf", "MadeUpOf", "HasProperty", "Desires", "NotDesires",
-                                           "AtLocation"],
-                     "Event-Centered": ["Causes", "HinderedBy", "xReason", "isAfter", "isBefore", "HasSubEvent",
-                                        "isFilledBy"],
-                     "Social-Interacton": ["xIntent", "xReact", "oReact", "xAttr", "xEffect", "xNeed", "xWant",
-                                           "oEffect",
-                                           "oWant"]}
-
-        # plot_bar(data, relations)
-        print(data.shape)
-        for word in ('none', 'None', 'NONE', 'NONEQ'):
-            data = data[data["tail"] != word]
-            print(data.shape)
-        data = data[data["tail"].notna()]
-        print(data.shape)
-
-        data.apply(triplet_to_text, axis="columns")
-        data.drop(columns="relation", inplace=True)
-        data = data.sample(frac=1).reset_index(drop=True)  # shuffle the dataframe
-
-        data.to_csv(output_dir, index=None, sep='\t')
-
-
-if __name__ == '__main__':
-    main()
+    main(**args)
