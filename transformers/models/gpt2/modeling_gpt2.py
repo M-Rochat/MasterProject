@@ -388,8 +388,7 @@ class Adapter(nn.Module):
         self.sequential = nn.Sequential(*seq_list)
 
         # if we want to initialize with the bert strategy then this function is called for all the linear layers     
-        self.adapter_down.apply(self.init_bert_weights)
-        self.adapter_up.apply(self.init_bert_weights)
+        self.sequential.apply(self.init_bert_weights)
 
 
     def forward(self, x):
@@ -416,16 +415,6 @@ class GPT2Block(nn.Module):
         hidden_size = config.hidden_size
         inner_dim = config.n_inner if config.n_inner is not None else 4 * hidden_size
         
-        #INIT HERE
-        self.n_adapters = config.get('n_adapters', 5)
-        self.adapters = []
-        for i in self.n_adapters:
-            self.adapters.append(Adapter(adapter_name=f'layer{layer_idx}_index{i}', input_size=hidden_size, down_sample = hidden_size//16))
-            
-        self.ln_3 = nn.LayerNorm(hidden_size, eps=config.layer_norm_epsilon)
-        self.linear = nn.Linear(config.hidden_size, self.n_adapters)
-
-        
         self.ln_1 = nn.LayerNorm(hidden_size, eps=config.layer_norm_epsilon)
         self.attn = GPT2Attention(config, layer_idx=layer_idx)
         self.ln_2 = nn.LayerNorm(hidden_size, eps=config.layer_norm_epsilon)
@@ -435,6 +424,15 @@ class GPT2Block(nn.Module):
             self.ln_cross_attn = nn.LayerNorm(hidden_size, eps=config.layer_norm_epsilon)
 
         self.mlp = GPT2MLP(inner_dim, config)
+        
+        #INIT HERE
+        self.n_adapters = config.get('n_adapters', 5)
+        self.adapters = nn.ModuleList([Adapter(adapter_name=f'layer{layer_idx}_index{i}', input_size=hidden_size, down_sample = hidden_size//16) for i in range(self.n_adapters)])
+        self.ln_3 = nn.LayerNorm(hidden_size, eps=config.layer_norm_epsilon)
+        self.linear = nn.Linear(config.hidden_size, self.n_adapters)
+        print('TADA!')
+
+ 
 
     def forward(
         self,
