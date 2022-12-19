@@ -24,6 +24,8 @@ import torch.utils.checkpoint
 from torch import nn
 from torch.nn import BCEWithLogitsLoss, CrossEntropyLoss, MSELoss
 
+from entmax import sparsemax
+
 from ...activations import ACT2FN
 from ...modeling_outputs import (
     BaseModelOutput,
@@ -292,6 +294,49 @@ class BartAttention(nn.Module):
 
         return attn_output, attn_weights_reshaped, past_key_value
 
+        
+class Adapter(nn.Module):
+    """
+    Implementation of a sequential bottleneck adapter block.
+    """
+
+    def __init__(
+        self,
+        adapter_name,
+        input_size,
+        down_sample,
+    ):
+        super().__init__()
+        self.name = adapter_name,
+        self.input_size = input_size
+        self.down_sample = down_sample
+        if self.down_sample is None:
+            self.down_sample = self.input_size // 16
+        if self.down_sample < 1:
+            self.down_sample = 1
+            
+        self.down_linear = nn.Linear(self.input_size, self.down_sample)
+        self.sigmoid = nn.ReLU()
+        self.up_linear =nn.Linear(self.down_sample, self.input_size)
+        self.layer_norm = nn.LayerNorm(self.input_size)
+        
+        self.apply(self.init_bert_weights)
+        
+    def forward(self, x):
+        return self.layer_norm(self.up_linear(self.sigmoid(self.down_linear(x))))
+
+    # This is copied from the BertPreTrainedModel class to make this a self containing class.
+    @staticmethod
+    def init_bert_weights(module):
+        """Initialize the weights."""
+        if isinstance(module, (nn.Linear, nn.Embedding)):
+            # std defaults to 0.02, this might need to be changed
+            module.weight.data.normal_(mean=0.0, std=0.001)#was 0.02
+        elif isinstance(module, nn.LayerNorm):
+            module.bias.data.zero_()
+            module.weight.data.fill_(1.0)
+        if isinstance(module, nn.Linear) and module.bias is not None:
+            module.bias.data.zero_()
 
 class BartEncoderLayer(nn.Module):
     def __init__(self, config: BartConfig):
@@ -309,6 +354,14 @@ class BartEncoderLayer(nn.Module):
         self.fc1 = nn.Linear(self.embed_dim, config.encoder_ffn_dim)
         self.fc2 = nn.Linear(config.encoder_ffn_dim, self.embed_dim)
         self.final_layer_norm = nn.LayerNorm(self.embed_dim)
+        
+        #INIT HERE
+        self.n_adapters = 5
+        self.adapters = nn.ModuleList([Adapter(adapter_name=f'index{i}', input_size=self.embed_dim, down_sample = self.embed_dim//16) for i in range(self.n_adapters)])
+        self.linear = nn.Linear(self.embed_dim, self.n_adapters)
+        #self.softmax= nn.Softmax(dim=-1)
+        print('TADA!')
+
 
     def forward(
         self,
@@ -346,7 +399,18 @@ class BartEncoderLayer(nn.Module):
         hidden_states = nn.functional.dropout(hidden_states, p=self.dropout, training=self.training)
         hidden_states = residual + hidden_states
         hidden_states = self.final_layer_norm(hidden_states)
-
+        
+        
+        #ADAPTER BLOCK HERE
+        residual = hidden_states  
+        logits = sparsemax(self.linear(hidden_states), dim=-1)
+        adapter_outputs = torch.zeros_like(hidden_states)
+        for n,adapter in enumerate(self.adapters):
+            adapter_outputs += torch.einsum('bij,bi->bij',adapter(hidden_states),logits[:,:,n])
+        hidden_states = adapter_outputs + residual
+        #END
+        
+        
         if hidden_states.dtype == torch.float16 and (
             torch.isinf(hidden_states).any() or torch.isnan(hidden_states).any()
         ):
@@ -359,49 +423,6 @@ class BartEncoderLayer(nn.Module):
             outputs += (attn_weights,)
 
         return outputs
-
-    
-class Adapter(nn.Module):
-    """
-    Implementation of a sequential bottleneck adapter block.
-    """
-
-    def __init__(
-        self,
-        adapter_name,
-        input_size,
-        down_sample,
-    ):
-        super().__init__()
-        self.name = adapter_name,
-        self.input_size = input_size
-        self.down_sample = down_sample
-        if self.down_sample is None:
-            self.down_sample = self.input_size // 16
-        if self.down_sample < 1:
-            self.down_sample = 1
-            
-        self.down_linear = nn.Linear(self.input_size, self.down_sample)
-        self.sigmoid = nn.ReLU()
-        self.up_linear =nn.Linear(self.down_sample, self.input_size)
-        
-        self.apply(self.init_bert_weights)
-        
-    def forward(self, x):
-        return self.up_linear(self.sigmoid(self.down_linear(x)))
-
-    # This is copied from the BertPreTrainedModel class to make this a self containing class.
-    @staticmethod
-    def init_bert_weights(module):
-        """Initialize the weights."""
-        if isinstance(module, (nn.Linear, nn.Embedding)):
-            # std defaults to 0.02, this might need to be changed
-            module.weight.data.normal_(mean=0.0, std=0.02)
-        elif isinstance(module, nn.LayerNorm):
-            module.bias.data.zero_()
-            module.weight.data.fill_(1.0)
-        if isinstance(module, nn.Linear) and module.bias is not None:
-            module.bias.data.zero_()
 
 class BartDecoderLayer(nn.Module):
     def __init__(self, config: BartConfig):
@@ -433,9 +454,8 @@ class BartDecoderLayer(nn.Module):
         #INIT HERE
         self.n_adapters = 5
         self.adapters = nn.ModuleList([Adapter(adapter_name=f'index{i}', input_size=self.embed_dim, down_sample = self.embed_dim//16) for i in range(self.n_adapters)])
-        self.ln_3 = nn.LayerNorm(self.embed_dim)
         self.linear = nn.Linear(self.embed_dim, self.n_adapters)
-        self.softmax= nn.Softmax(dim=-1)
+        #self.softmax= nn.Softmax(dim=-1)
         print('TADA!')
 
     def forward(
@@ -519,13 +539,11 @@ class BartDecoderLayer(nn.Module):
         
         #ADAPTER BLOCK HERE
         residual = hidden_states  
-        pre_logits=self.linear(hidden_states)
-        logits = self.softmax(self.linear(hidden_states))     
+        logits = sparsemax(self.linear(hidden_states), dim=-1)
+        adapter_outputs = torch.zeros_like(hidden_states)
         for n,adapter in enumerate(self.adapters):
-            normed = torch.einsum('bij,bi->bij',adapter(hidden_states),logits[:,:,n])
-            residual = residual + normed
-        hidden_states = residual
-        hidden_states = self.ln_3(hidden_states)
+            adapter_outputs += torch.einsum('bij,bi->bij',adapter(hidden_states),logits[:,:,n])
+        hidden_states = adapter_outputs + residual
         #END
         
         outputs = (hidden_states,)
