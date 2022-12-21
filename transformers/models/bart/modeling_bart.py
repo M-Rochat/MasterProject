@@ -358,7 +358,7 @@ class BartEncoderLayer(nn.Module):
         #INIT HERE
         self.n_adapters = 5
         self.adapters = nn.ModuleList([Adapter(adapter_name=f'index{i}', input_size=self.embed_dim, down_sample = self.embed_dim//16) for i in range(self.n_adapters)])
-        self.linear = nn.Linear(self.embed_dim, self.n_adapters)
+        #self.linear = nn.Linear(self.embed_dim, self.n_adapters)
         #self.softmax= nn.Softmax(dim=-1)
         print('TADA!')
 
@@ -403,13 +403,14 @@ class BartEncoderLayer(nn.Module):
         
         #ADAPTER BLOCK HERE
         residual = hidden_states  
-        logits = sparsemax(self.linear(hidden_states), dim=-1)
+        #logits = self.softmax(self.linear(hidden_states))
+        #logits = sparsemax(self.linear(hidden_states), dim=-1)
         adapter_outputs = torch.zeros_like(hidden_states)
         for n,adapter in enumerate(self.adapters):
-            adapter_outputs += torch.einsum('bij,bi->bij',adapter(hidden_states),logits[:,:,n])
+            #adapter_outputs += torch.einsum('bij,bi->bij',adapter(hidden_states),logits[:,:,n])
+            adapter_outputs += adapter(hidden_states)
         hidden_states = adapter_outputs + residual
         #END
-        
         
         if hidden_states.dtype == torch.float16 and (
             torch.isinf(hidden_states).any() or torch.isnan(hidden_states).any()
@@ -454,7 +455,7 @@ class BartDecoderLayer(nn.Module):
         #INIT HERE
         self.n_adapters = 5
         self.adapters = nn.ModuleList([Adapter(adapter_name=f'index{i}', input_size=self.embed_dim, down_sample = self.embed_dim//16) for i in range(self.n_adapters)])
-        self.linear = nn.Linear(self.embed_dim, self.n_adapters)
+        #self.linear = nn.Linear(self.embed_dim, self.n_adapters)
         #self.softmax= nn.Softmax(dim=-1)
         print('TADA!')
 
@@ -539,10 +540,12 @@ class BartDecoderLayer(nn.Module):
         
         #ADAPTER BLOCK HERE
         residual = hidden_states  
-        logits = sparsemax(self.linear(hidden_states), dim=-1)
+        #logits = self.softmax(self.linear(hidden_states))
+        #logits = sparsemax(self.linear(hidden_states), dim=-1)
         adapter_outputs = torch.zeros_like(hidden_states)
         for n,adapter in enumerate(self.adapters):
-            adapter_outputs += torch.einsum('bij,bi->bij',adapter(hidden_states),logits[:,:,n])
+            #adapter_outputs += torch.einsum('bij,bi->bij',adapter(hidden_states),logits[:,:,n])
+            adapter_outputs += adapter(hidden_states)
         hidden_states = adapter_outputs + residual
         #END
         
